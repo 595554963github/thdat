@@ -26,7 +26,83 @@ struct DatEntry {
     uint32_t size;
     uint32_t zsize;
 };
+void suica_decrypt(std::vector<uint8_t>& data) {
+    uint8_t k = 0x64;
+    uint8_t t = 0x64;
+    for (size_t i = 0; i < data.size(); i++) {
+        data[i] ^= k;
+        k += t;
+        t += 0x4D;
+    }
+}
 
+bool ExtractSuicaDat(const char* datPath) {
+    FILE* file = NULL;
+    fopen_s(&file, datPath, "rb");
+    if (!file) {
+        printf("Failed to open file: %s\n", datPath);
+        return false;
+    }
+
+    fseek(file, 0, SEEK_END);
+    long fileSize = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    uint16_t entryCount;
+    fread(&entryCount, 2, 1, file);
+
+    uint32_t listSize = entryCount * 0x6C;
+    std::vector<uint8_t> listBuf(listSize);
+    fread(listBuf.data(), listSize, 1, file);
+
+    suica_decrypt(listBuf);
+
+    fs::path datPathObj(datPath);
+    fs::path outputDir = datPathObj.parent_path() / datPathObj.stem().string();
+    fs::create_directories(outputDir);
+
+    int successCount = 0;
+
+    for (int i = 0; i < entryCount; i++) {
+        size_t p = i * 0x6C;
+
+        int nameLen = 0;
+        for (int j = 0; j < 0x64; j++) {
+            if (listBuf[p + j] == 0) break;
+            nameLen++;
+        }
+
+        if (nameLen == 0) continue;
+
+        std::string name((char*)&listBuf[p], nameLen);
+
+        uint32_t offset = 0, size = 0;
+        for (int j = 0; j < 4; j++) {
+            size |= (listBuf[p + 0x64 + j] << (j * 8));
+            offset |= (listBuf[p + 0x68 + j] << (j * 8));
+        }
+
+        fseek(file, offset, SEEK_SET);
+        std::vector<uint8_t> fileData(size);
+        fread(fileData.data(), size, 1, file);
+
+        fs::path outPath = outputDir / name;
+        fs::create_directories(outPath.parent_path());
+
+        FILE* out = NULL;
+        fopen_s(&out, outPath.string().c_str(), "wb");
+        if (out) {
+            fwrite(fileData.data(), size, 1, out);
+            fclose(out);
+            printf("%s\n", name.c_str());
+            successCount++;
+        }
+    }
+
+    fclose(file);
+    printf("Successfully extracted %d/%d files\n", successCount, entryCount);
+    return successCount > 0;
+}
 struct crypt_params_t {
     unsigned char key;
     unsigned char step;
@@ -690,7 +766,10 @@ bool ExtractTh105Dat(const char* datPath, unsigned int version) {
 }
 
 bool ExtractThDat(const char* datPath, unsigned int version) {
-    if (IsTh95Format(version)) {
+    if (version == 75 || version == 7575) {
+        return ExtractSuicaDat(datPath);
+    }
+    else if (IsTh95Format(version)) {
         return ExtractTh95Dat(datPath, version);
     }
     else if (IsTh105Format(version)) {
@@ -706,8 +785,9 @@ int main(int argc, char* argv[]) {
     if (argc < 3) {
         printf("Usage: %s <dat file> <version number>\n", argv[0]);
         printf("Supported versions:\n");
+        printf("  suica format: 75,7575 (th075 Touhou Suimusou)\n");
         printf("  th95 format: 95,10,11,12,125,128,13,14,143,15,16,165,17,18,185,19,20\n");
-        printf("  th105 format: 75,7575,105,105105,123\n");
+        printf("  th105 format: 105,105105,123\n");
         return 1;
     }
 
